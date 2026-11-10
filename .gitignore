@@ -1,0 +1,14 @@
+node_modules/
+data/
+dist/
+.env
+.env.*
+!.env.example
+*.log
+*.zip
+*.bak-*
+.DS_Store
+Thumbs.db
+
+# 本地交接笔记（含个人路径与服务器信息）
+AGENTS.md
