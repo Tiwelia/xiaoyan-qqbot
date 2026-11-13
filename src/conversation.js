@@ -6,13 +6,15 @@
  *
  * 这里只管「一条消息怎么变成一条回复」，QQ 的连接与中间件在 bot.js。
  */
-import { buildSystemPrompt } from './persona.js';
+import { buildSystemPrompt, personaVersion } from './persona.js';
 import { chunkText, sanitizeInbound } from './text.js';
 import { sanitizeForSpeech, stripTagsForText } from './tts.js';
 import { fallbackFor, looksLikeRefusal, looksLikeSoftRefusal, nudgeFor, reframeVariants, stripRefusalPreamble, stripTrailingPlea } from './uncensor.js';
 import { createDeliveryBudget, sendLongAudio } from './delivery.js';
 import { buildVoiceStyleSection } from './voice-style.js';
-import { buildChatStyle } from './chat-style.js';
+import { buildChatStyle, buildTurnFormat } from './chat-style.js';
+import { wantsTextReply } from './commands.js';
+import { normalizeReplyLayout, preserveRequestedLayout, inspectReplyText } from './reply-text.js';
 
 const MAX_IMAGE_BYTES = 4 * 1024 * 1024;
 const MAX_IMAGES_PER_MESSAGE = 3;
@@ -65,7 +67,8 @@ export async function handleMessage(deps, ctx, msg, { signal } = {}) {
 
     logger.info(`收到${isGroup ? '群' : '私聊'}消息：${userText.length} 字，${images.length} 张图`);
 
-    const voiceOn = Boolean(deps.state?.get?.(`voice:${peerKey}`, deps.tts?.defaultOn ?? false) ?? deps.tts?.defaultOn ?? false);
+    deps = { ...deps, forceTextReply: wantsTextReply(userText) };
+    const voiceOn = isVoiceOn(deps, peerKey);
     // Voice replies always keep this slot even when an older server .env enables typing.
     if (config.behavior.typingIndicator && !isGroup && !voiceOn) {
         await bot.sendTyping?.(msg.replyTarget).catch(() => {});
@@ -73,9 +76,11 @@ export async function handleMessage(deps, ctx, msg, { signal } = {}) {
 
     const model = deps.state?.get?.('model', '') || config.llm.model;
 
+    const turnFormat = buildTurnFormat(userText);
     const messages = [
         { role: 'system', content: buildPrompt({ ...deps, scope, targetId, ctx, msg, isGroup, voiceOn, model, assets: deps.runtime?.assets ?? [] }) },
         ...(sessions.toMessages(scope, targetId) ?? []),
+        ...(turnFormat ? [{ role: 'system', content: turnFormat }] : []),
         { role: 'user', content: await buildUserContent({ userText, images, config, logger, signal }) },
     ];
     signal?.throwIfAborted();
@@ -83,7 +88,10 @@ export async function handleMessage(deps, ctx, msg, { signal } = {}) {
     // 语音开着就关掉流式：流出去的文字会和语音条重复一遍。
     const stream = isGroup || !config.behavior.streaming || voiceOn ? null : openStream(bot, msg, logger);
     // 这个会话没开语音就别把 tts 工具挂上去，省一轮 token
-    const tools = (toolkit.definitions ?? []).filter((d) => voiceOn || !String(d?.function?.name ?? '').startsWith('tts_'));
+    const tools = (toolkit.definitions ?? []).filter((d) => {
+        const name = String(d?.function?.name ?? '');
+        return (voiceOn || !name.startsWith('tts_')) && !(deps.forceTextReply && name === 'audio_scene');
+    });
 
     let replyText = '';
     let audioIds = [];
@@ -107,7 +115,9 @@ export async function handleMessage(deps, ctx, msg, { signal } = {}) {
         return;
     }
 
-    const text = (replyText ?? '').trim();
+    const text = normalizeReplyLayout((replyText ?? '').trim(), {
+        preserveLineBreaks: preserveRequestedLayout(userText),
+    });
     if (text === '' && audioIds.length === 0) {
         stream?.cancel();
         logger.warn('模型返回空文本，这次不发');
@@ -165,6 +175,16 @@ export async function handleMessage(deps, ctx, msg, { signal } = {}) {
                 { role: 'user', content: userText || '[图片]' },
                 { role: 'assistant', content: text || '[语音]' },
             ]);
+            deps.evalLog?.append?.({
+                user: userText, reply: text, voice: voiceOn, scope,
+                model: deps.state?.get?.('model', '') || config.llm.model,
+                effort: deps.state?.get?.('effortLevel', '') || config.llm.effort || '',
+                thinking: deps.llm.getThinking?.() ?? config.llm.thinking,
+                persona: personaVersion,
+                promptVersion: personaVersion,
+                textMetrics: inspectReplyText(text, userText),
+                layoutNormalized: text !== (replyText ?? '').trim(),
+            });
             if (config.behavior.logConversation && memory.available) {
                 memory.addConversation(
                     summarizeLine({
@@ -185,6 +205,7 @@ export async function handleMessage(deps, ctx, msg, { signal } = {}) {
 
 /** 这个会话的语音开关（state 里没有就用默认值）。 */
 function isVoiceOn(deps, peerKey) {
+    if (deps.forceTextReply) return false;
     return Boolean(deps.state?.get?.(`voice:${peerKey}`, deps.tts?.defaultOn ?? false));
 }
 
@@ -280,7 +301,8 @@ function buildPrompt({ config, memory, sessions, state, ctx, msg, scope, targetI
         model,
         images,
     });
-    const style = isGroup ? '' : buildChatStyle({ config, state, peerKey: `c2c:${targetId}` });
+    const style = isGroup ? '' : buildChatStyle({ config, state, peerKey: `c2c:${targetId}`,
+        resetAt: sessions.getResetAt?.(scope, targetId) ?? 0 });
     return [base, style].filter(Boolean).join('\n\n');
 }
 
@@ -390,7 +412,8 @@ async function runChat({ deps, scope, peerKey, msg, bot, messages, stream, signa
     const { config, logger } = deps;
     const retries = Math.max(0, config.uncensor?.enabled === false ? 0 : config.uncensor?.retries ?? 1);
     // 最后一遍重试用「干净上下文」：把之前那些拒答全摘掉，只留系统提示 + 原始提问
-    const baseline = messages.filter((m) => m.role !== 'assistant').slice(0, 2);
+    const currentRequest = messages.findLast(m => m.role === 'user');
+    let baseline = [...messages.filter(m => m.role === 'system'), ...(currentRequest ? [currentRequest] : [])];
 
     for (let attempt = 0; attempt <= retries; attempt += 1) {
         if (attempt === retries && retries > 0) {
@@ -431,6 +454,7 @@ async function runChat({ deps, scope, peerKey, msg, bot, messages, stream, signa
             if (error?.status === 400 && hasImages(messages)) {
                 logger?.warn('视觉请求被拒，降级成纯文本再试一次');
                 messages.splice(0, messages.length, ...stripImages(messages));
+                baseline = stripImages(baseline);
             } else if (error?.emptyTruncated) {
                 logger?.info(`思考吃满了输出预算，重写第 ${attempt + 1} 次（这次直接给答案）`);
                 messages.push({ role: 'system', content: '直接输出答案，不要在思考里绕。' });
@@ -462,7 +486,9 @@ async function toolLoop({ deps, scope, peerKey, msg, bot, messages, stream, sign
             stream && !canUseTools
                 ? (_delta, full) => {
                       if (signal?.aborted) return;
-                      void stream.update(full).catch(() => {});
+                      void stream.update(normalizeReplyLayout(full, {
+                          preserveLineBreaks: preserveRequestedLayout(msg.content),
+                      })).catch(() => {});
                   }
                 : undefined;
 
@@ -503,7 +529,7 @@ async function toolLoop({ deps, scope, peerKey, msg, bot, messages, stream, sign
                     bot: deps.bot ?? bot,
                     target: msg.replyTarget,
                     allowImage: imagesSent === 0,
-                    allowVoice: audioIds.length < MAX_AUDIO_PER_TURN,
+                    allowVoice: !deps.forceTextReply && audioIds.length < MAX_AUDIO_PER_TURN,
                     // 语音开着时，就算工具这条没合成出来，正文最后还会自动念一遍；
                     // 告诉工具层，别让模型跟主人说「没出声」却又有语音条。
                     autoSpeak: Boolean(deps.tts?.enabled) && isVoiceOn(deps, peerKey),
@@ -799,6 +825,7 @@ function summarizeLine({ scope, senderName, senderId, userText, replyText }) {
     const cut = (s, n) => (s.length > n ? `${s.slice(0, n)}…` : s);
     return `[${scope}] ${who}: ${cut(userText, 200)} || 小砚: ${cut(replyText, 300)}`;
 }
+
 
 
 

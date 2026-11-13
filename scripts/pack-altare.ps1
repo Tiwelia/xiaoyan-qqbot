@@ -11,7 +11,7 @@ if (-not $outputFile.StartsWith($projectPrefix, [System.StringComparison]::Ordin
 New-Item -ItemType Directory -Path $outputDirectory -Force | Out-Null
 
 $files = @()
-foreach ($relative in @('package.json', 'package-lock.json', 'altare.js', '.npmrc', '.env.example', '.gitignore', 'README.md', 'AGENTS.md', 'ALTARE.md')) {
+foreach ($relative in @('package.json', 'package-lock.json', 'altare.js', '.npmrc', '.env.example', '.gitignore', 'README.md', 'ALTARE.md', 'src/eval-rubric.json')) {
     $fullPath = Join-Path $projectRoot $relative
     if (-not (Test-Path -LiteralPath $fullPath -PathType Leaf)) {
         throw "Missing required project file: $relative"
@@ -19,8 +19,9 @@ foreach ($relative in @('package.json', 'package-lock.json', 'altare.js', '.npmr
     $files += Get-Item -LiteralPath $fullPath -Force
 }
 foreach ($directory in @('src', 'scripts', 'docs')) {
+    # 内部复盘/修复记录不进部署包，只带使用文档与准则
     $files += Get-ChildItem -LiteralPath (Join-Path $projectRoot $directory) -File -Force -Recurse |
-        Where-Object { $_.Extension -in @('.js', '.mjs', '.ps1', '.md') }
+        Where-Object { $_.Extension -in @('.js', '.mjs', '.ps1', '.md') -and $_.Name -notmatch '-2026-\d{2}-\d{2}\.md$' }
 }
 
 Add-Type -AssemblyName System.IO.Compression
@@ -45,4 +46,5 @@ try {
 }
 Write-Output "Created: $outputFile"
 Write-Output 'Excluded: real .env, runtime data, node_modules, old archives and seed databases.'
+
 

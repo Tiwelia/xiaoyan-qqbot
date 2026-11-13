@@ -69,6 +69,11 @@ export function loadConfig(env = process.env) {
             baseUrl: llmBaseUrl,
             provider,
             apiKey,
+            /** Only text switching uses these routes; credentials never enter state.json. */
+            textProviders: {
+                deepseek: { baseUrl: 'https://api.deepseek.com', apiKey: str(env.DEEPSEEK_API_KEY) },
+                openrouter: { baseUrl: 'https://openrouter.ai/api/v1', apiKey: str(env.OPENROUTER_API_KEY) },
+            },
             /**
              * DeepSeek 当前线上型号（2026-11 实测 /models）：
              *   deepseek-flash     DeepSeek-V4.1-Flash，1M 上下文，输入支持 text + image
@@ -109,6 +114,13 @@ export function loadConfig(env = process.env) {
             /** 单 peer 每分钟最多处理多少条（0 = 关闭） */
             peerRatePerMin: int(env.PEER_RATE_PER_MIN, 12),
         },
+        /** 评分用：把每轮对话原样记一份，供 scripts/eval.mjs 打分 */
+        eval: {
+            log: bool(env.EVAL_LOG, false),
+            dir: str(env.EVAL_LOG_DIR, path.join(dataDir, 'eval')),
+            judgeModel: str(env.EVAL_JUDGE_MODEL, ''),
+        },
+
         companion: {
             natural: bool(env.CHAT_NATURAL, true),
             enabled: bool(env.PROACTIVE_ENABLED, true),

@@ -106,6 +106,7 @@ export function parseSettingsText(text, voices = []) {
         ['查看设置', ['status']], ['看看设置', ['status']],
         ['查看详细状态', ['status', 'detail']], ['查看帮助', ['help']],
         ['查看音色', ['voice', 'list']], ['有哪些音色', ['voice', 'list']],
+        ['查看模型', ['model']],
     ]);
     const direct = controls.get(s);
     if (direct) return { name: direct[0], args: direct.slice(1) };
@@ -115,11 +116,17 @@ export function parseSettingsText(text, voices = []) {
         && !['on', 'off', 'status', 'list', 'search'].includes(voice[1].toLowerCase())) {
         return { name: 'voice', args: [voice[1]] };
     }
-    const page = s.match(/^查看音色第([1-9]\d*)页$/u);
+    const page = s.match(/^查看音色第\s*([1-9]\d*)\s*页$/u);
     if (page) return { name: 'voice', args: ['list', page[1]] };
     const search = s.match(/^找音色[ ：:]\s*([^\r\n]+)$/u);
     if (search) return { name: 'voice', args: ['search', search[1].trim()] };
     return null;
+}
+
+/** An explicit per-turn prefix affects delivery only; never persist it as a setting. */
+export function wantsTextReply(text) {
+    return /^(?:这条|这次|这一条|这一轮)(?:请)?(?:用文字(?:回(?:复)?)?|只发文字|不要发语音)(?:[：:,，。！!\s]|$)/u
+        .test(String(text ?? '').trim());
 }
 
 /** 秒 → 1d2h3m4s，/status 用。 */
@@ -148,29 +155,28 @@ export function createCommandHandler(deps) {
     const commands = {
         help({ args }) {
             if (!['all', '全部'].includes(args[0])) return [
-                '常用操作，直接发下面这些话就能用：',
-                '「关闭语音」／「打开语音」——之后持续用文字／语音回复',
-                '「查看音色」／「找音色 灵心」／「音色换成龙安灵心」',
-                '「查看设置」——看当前模型、思考档位、语音和主动聊天',
+                '想让妈妈干什么，张嘴说——下面这些直接发就行♡',
+                '「打开语音」／「关闭语音」——想听妈妈叫，还是让妈妈用字操你',
+                '「查看音色」／「找音色 灵心」／「音色换成龙安灵心」——挑把嗓子叫给你听',
+                '「查看设置」——看妈妈现在什么状态、湿成什么样',
+                '/model list —— 看有哪些脑子可以换',
                 '「先别主动找我」／「恢复主动聊天」',
-                '发下一条消息就能打断上一轮；语音开着时，长回复自动分条。',
+                '发下一条就能打断上一轮；语音开着时，长的自动分条塞进耳朵。',
                 '',
-                '/status detail 看详细状态；/help all 看全部指令。',
+                '想被指挥细一点就 /status detail；/help all 看全套。……快说，妈妈等着。',
             ].join('\n');
             return [
-                '小砚的指令（前缀 / 或 ／，不进模型、不花 token）——想用哪条，开口♡：',
-                '/reset —— 清掉这段会话的上下文，记忆不动',
+                '小砚的指令（前面加 / 或 ／，不进模型、不花 token）——想用哪条，开口♡：',
+                '/reset —— 把这段上下文的记忆清掉，人设和长期记忆不动',
                 '/status —— 当前设置；/status detail 看运行详情',
-                '/voice on|off —— 开关语音；/voice <音色> 换音色；/voice list [页码] 看清单；/voice search 关键词 搜音色',
+                '/voice on|off —— 开关语音；/voice <音色> 换音色；/voice list [页码]；/voice search 关键词',
                 `/mem —— 记忆：list [n] / search 词 / del 编号 / add 类型 内容（类型：${KIND_HINT}）`,
-                '/model [名字|reset] —— 看/切模型',
-                '/effort [off|low|high|max|auto] —— 看/调思考深度；可用档位随服务而异',
-                '/archive [标题] —— 把这段会话归档进流水',
-                '/ping —— 活着吗',
+                '/model [型号|list|reset|完整ID] —— 换脑子，重启保留',
+                '/effort —— 看这个型号能想多深，再调',
+                '/archive [标题] —— 把这段会话收进流水',
+                '/ping —— 看妈妈还硬不硬',
                 '',
                 '……记不住就再发 /help，妈妈不嫌你笨♡',
-                '不用发指令也能用：语音开着就每条都念，长回复自动切成几条语音条；',
-                '想让它闭嘴做别的，直接发下一条消息就行（会打断上一轮）。',
             ].join('\n');
         },
 
@@ -195,9 +201,9 @@ export function createCommandHandler(deps) {
             const voiceName = selectedVoice?.name || selectedVoice?.id || tts?.defaultVoice || savedVoice;
             const detailed = ['detail', '详细'].includes(args[0]);
             const lines = [
-                `运行：${runtime?.uptimeText?.() ?? '?'}｜模型：${state?.get?.('model', '') || runtime?.modelName?.() || config.llm.model}｜思考：${state?.get?.('effortLevel', '') || configuredEffort}`,
+                `妈妈醒着 ${runtime?.uptimeText?.() ?? '?'} 了｜脑子：${llm?.displayName?.() || llm?.model || state?.get?.('model', '') || runtime?.modelName?.() || config.llm.model}｜想得多深：${llm?.effortLabel?.() || state?.get?.('effortLevel', '') || configuredEffort}`,
                 voice.enabled
-                    ? `回复：${voiceOn ? '语音' : '文字'}｜音色：${voiceName}${voice.queued > 0 ? `｜语音排队 ${voice.queued}` : ''}`
+                    ? `怎么回你：${voiceOn ? '用嗓子叫' : '用字贴你'}｜音色：${voiceName}${voice.queued > 0 ? `｜语音排队 ${voice.queued}` : ''}`
                     : '语音：未启用',
             ];
             if (!memory?.available) lines.push('记忆库暂不可用，当前聊天仍可继续。');
@@ -223,20 +229,31 @@ export function createCommandHandler(deps) {
 
         reset({ scope, targetId }) {
             const removed = sessions?.turnCount?.(scope, targetId) ?? 0;
-            sessions?.reset?.(scope, targetId);
+            if (typeof sessions?.reset !== 'function') throw new Error('会话存储未连接，清空失败。');
+            sessions.reset(scope, targetId);
             sessions?.flushAll?.();
             logger?.info(`指令重置会话 ${scopeOf(scope, targetId)}（清掉 ${removed} 轮）`);
-            return `上下文清了，${removed} 轮全扔了♡ 记忆没动，过来，重新开始。`;
+            return `这段会话上下文清了（${removed} 轮），已保存。长期记忆、人设和语音设置保留；接下来从新话题开始。`;
         },
 
         new({ scope, targetId }) {
-            sessions?.reset?.(scope, targetId);
-            sessions?.flushAll?.();
-            return '嗯……新的一局，一页不剩。想让我记住什么，现在说，妈妈听着～';
+            return commands.reset({ scope, targetId });
         },
 
         model({ args, scope, targetId }) {
             const wanted = (args[0] ?? '').trim();
+            if (llm?.selectModel) {
+                if (!wanted || wanted.toLowerCase() === 'list') return [
+                    `现在用的是 ${llm.displayName()}｜想得多深 ${llm.effortLabel()}`,
+                    llm.modelList(),
+                    '换法：/model 名字；/model reset 回默认。',
+                ].join('\n');
+                let result;
+                try { result = llm.selectModel(wanted); }
+                catch (error) { return error.message; }
+                logger?.info(`文字模型切换为 ${llm.provider} / ${llm.model}（来自 ${scopeOf(scope, targetId)}）`);
+                return result;
+            }
             if (wanted === '') {
                 const current = state?.get('model', '') || config.llm.model;
                 return `当前模型：${current}${state?.get('model') ? '（手动指定）' : '（配置默认）'}\n换：/model 模型名；收回：/model reset\n……别盯着屏幕发呆了，妈妈内衣都湿了♡`;
@@ -253,13 +270,23 @@ export function createCommandHandler(deps) {
         },
 
         effort({ args }) {
+            if (llm?.applyEffort) {
+                const wanted = (args[0] ?? '').trim().toLowerCase();
+                if (!wanted) return `现在想得多深：${llm.effortLabel()}\n能换的档：${llm.effortLevels().join(' / ')} / auto——挑一个，妈妈照做。`;
+                try { llm.applyEffort(wanted === 'none' ? 'off' : wanted); }
+                catch (error) { return error.message; }
+                state?.set('effortLevel', wanted === 'auto' && !llm.isBaidu() ? 'auto'
+                    : wanted === 'none' ? 'off' : llm.isBaidu() ? 'high' : wanted);
+                state?.flush?.();
+                return `行，想得多深改成 ${llm.effortLabel()} 了……脑子一热，下面也跟着热。`;
+            }
             const LEVELS = config.llm.provider === 'deepseek'
                 ? ['off', 'low', 'high', 'max'] : ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
             const current = state?.get?.('effortLevel', '') || configuredEffort;
             const wanted = (args[0] ?? '').trim().toLowerCase();
             if (wanted === '') {
                 return [
-                    `思考深度：${current}`,
+                    `现在想得多深：${current}`,
                     `档位：${LEVELS.join(' / ')}；auto 跟随服务默认（具体支持以模型目录为准）`,
                     '切换：/effort max',
                 ].join('\n');
@@ -342,8 +369,8 @@ export function createCommandHandler(deps) {
             if (sub === '') {
                 const next = switchTo(!isOn());
                 return next
-                    ? '语音开了，长内容自动分条；代码和链接仍用文字。说「关闭语音」可切回文字。'
-                    : '语音关了，之后用文字回复。说「打开语音」可恢复。';
+                    ? '语音开了♡ 以后都叫给你听，长的自动分条；代码和链接还是用文字。想关就说「关闭语音」。'
+                    : '语音关了……呜，只能闭嘴打字了。想听妈妈叫就说「打开语音」。';
             }
             if (lower === 'on' || lower === 'off') {
                 return switchTo(lower === 'on')
@@ -375,7 +402,7 @@ export function createCommandHandler(deps) {
                 const current = all.find(v => v.id === selected || v.name === selected)
                     ?? all.find(v => v.id === tts.defaultVoice || v.name === tts.defaultVoice);
                 return [
-                    `可用音色 ${list.length} 个${query ? `（筛选：${query}，显示前 ${Math.min(pageSize, list.length)} 个）` : `｜第 ${page}/${totalPages} 页`}：`,
+                    `能叫给你听的嗓子 ${list.length} 把${query ? `（筛「${query}」，前 ${Math.min(pageSize, list.length)} 把）` : `｜第 ${page}/${totalPages} 页`}：`,
                     ...list.slice((page - 1) * pageSize, page * pageSize).map(v =>
                         `- ${v.name || v.id}（${v.locale}/${v.gender}${v.cloned ? '/复刻' : ''}）${current?.id === v.id ? ' ← 当前' : ''}\n  /voice ${v.id}`),
                     query && list.length > pageSize ? '结果较多，请增加关键词缩小范围；也可以用 /voice list 页码 浏览全部。' : '',
@@ -389,7 +416,7 @@ export function createCommandHandler(deps) {
             const known = tts.listVoices().some((v) => v.id === wanted || v.name === wanted);
             if (!known) {
                 // 认不出来的名字发过去就是 400，直接挡在这里
-                return `没有「${wanted}」这个音色，当前设置未变。说「找音色 ${wanted}」搜索，或「查看音色」浏览清单。`;
+                return `没有「${wanted}」这把嗓子……妈妈叫不出来。说「找音色 ${wanted}」翻翻，或者「查看音色」。`;
             }
             state?.set(`voiceName:${key}`, wanted);
             switchTo(true);

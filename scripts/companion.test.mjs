@@ -22,6 +22,44 @@ const configFor = (extra = {}) => loadConfig({
 });
 const deferred = () => { let resolve; const promise = new Promise((r) => { resolve = r; }); return { promise, resolve }; };
 
+test('reset excludes old proactive text from timer prompts without disabling future context', async () => {
+    const f = fixture();
+    f.companion.observe(msg());
+    const resetAt = f.state.get('companion').lastUserAt;
+    f.state.set('companion', { ...f.state.get('companion'), lastPushText: 'BEFORE_RESET_MARKER',
+        pushStatus: 'sent', lastPushAt: resetAt - 1000 });
+    f.deps.sessions.getResetAt = () => resetAt;
+    f.advance(91);
+    await f.companion.tick();
+    assert.ok(!JSON.stringify(f.requests[0].messages).includes('BEFORE_RESET_MARKER'));
+    const style = buildChatStyle({ config: f.config, state: f.state, peerKey: 'c2c:alice',
+        now: f.state.get('companion').lastPushAt, resetAt });
+    assert.ok(style.includes('考试结束了'));
+    await f.companion.stop();
+});
+
+test('a proactive send completing after reset retains its original context boundary', async () => {
+    const began = deferred(), finish = deferred();
+    const f = fixture({ bot: { send: async () => { began.resolve(); await finish.promise; } } });
+    f.companion.observe(msg());
+    f.advance(91);
+    const pending = f.companion.tick();
+    await began.promise;
+    const created = f.state.get('companion').lastPushCreatedAt;
+    const resetAt = created + 1;
+    f.advance(1);
+    f.companion.observe(msg('/reset'));
+    finish.resolve();
+    await pending;
+    const saved = f.state.get('companion');
+    assert.ok(saved.lastPushAt > resetAt);
+    assert.equal(saved.lastPushCreatedAt, created);
+    assert.ok(!buildChatStyle({ config: f.config, state: f.state, peerKey: 'c2c:alice',
+        now: saved.lastPushAt, resetAt }).includes('考试结束了'));
+    assert.equal(saved.sent, 1);
+    await f.companion.stop();
+});
+
 function fixture(over = {}) {
     let at = Date.parse('2026-11-09T02:00:00Z'); // Beijing 10:00
     const values = new Map();
@@ -69,7 +107,7 @@ test('proactive messages target only the owner and never reuse an old msg_id or 
     f.advance(91);
     await Promise.all([f.companion.tick(), f.companion.tick()]);
     assert.equal(f.requests.length, 1);
-    assert.equal(f.requests[0].maxTokens, 512);
+    assert.equal(f.requests[0].maxTokens, 320);
     assert.equal(f.requests[0].thinking, 'disabled');
     assert.deepEqual(f.sent[0], { target: { scope: 'c2c', targetId: 'alice' }, msgType: 0, content: '考试结束了，要不要先歇会儿？' });
     f.advance(180);
@@ -292,5 +330,6 @@ test('a pending push older than a day releases the awaiting-reply latch', async 
     assert.equal(stats.awaitingReply, false, '超过一天要放开，不能永久闭嘴');
     assert.equal(stats.pushStatus, 'stale');
 });
+
 
 

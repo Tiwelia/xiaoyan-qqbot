@@ -10,7 +10,7 @@
  */
 import { QQBot, accessPolicy, messageFilter, quoteRef } from '@tencent-connect/qqbot-nodejs';
 
-import { parseCommand } from './commands.js';
+import { parseCommand, wantsTextReply } from './commands.js';
 import { handleMessage } from './conversation.js';
 import { createLimiter, createSerialQueue, runWithDeadline } from './queue.js';
 import { createOwnerGuard } from './owner.js';
@@ -159,6 +159,16 @@ export function createBot(deps, { Bot = QQBot } = {}) {
                     .catch((error) => logger.warn(`回复 /stop 失败：${error?.message || error}`));
                 return;
             }
+            if (['reset', 'new'].includes(parsed?.name) && typeof deps.commands?.handle === 'function') {
+                // Reset is a synchronous local commit before its first await. Do not queue it
+                // behind cancelled network work, rate-limit it, or let a follow-up undo it.
+                const delivery = createDeliveryBudget(bot, { isGroup: false });
+                const task = handleMessage({ ...deps, bot: delivery.bot, delivery, auth, runtime }, ctx, msg)
+                    .catch(error => logger.warn(`清空会话处理失败：${error?.message || error}`));
+                tasks.add(task);
+                try { await task; } finally { tasks.delete(task); }
+                return;
+            }
         }
 
         // 打断性的新消息要放行：不然刚说完「别说了」第二条反而被冷却丢掉。
@@ -177,7 +187,7 @@ export function createBot(deps, { Bot = QQBot } = {}) {
             if (stopping) return;
             const command = config.commands.enabled ? parseCommand(msg.content, config.commands.prefixes) : null;
             // 语音开着的一轮随时可能生成十几分钟的长语音，用长超时；普通文字聊天仍是短超时
-            const voiceOn = Boolean(deps.state?.get?.(`voice:${key}`, deps.tts?.defaultOn ?? false));
+            const voiceOn = !wantsTextReply(msg.content) && Boolean(deps.state?.get?.(`voice:${key}`, deps.tts?.defaultOn ?? false));
             const timeoutMs = command?.name === 'long' || voiceOn
                 ? config.behavior.longReplyTimeoutMs : config.behavior.replyTimeoutMs;
             const remainingMs = timeoutMs - (Date.now() - receivedAt);

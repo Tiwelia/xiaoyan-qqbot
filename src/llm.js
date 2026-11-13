@@ -22,6 +22,9 @@ export class LlmClient {
             ? ({ 'api.deepseek.com': 'deepseek', 'openrouter.ai': 'openrouter', 'api.openai.com': 'openai' })[new URL(this.baseUrl).hostname] || 'generic'
             : provider;
         this.unsupportedParameters = new Map();
+        // 有些模型（如 OpenRouter 上的 baidu/ernie-5.5-flash-preview）强制开启思考，
+        // 明确拒绝 reasoning:{enabled:false}。记住这些模型，别再每轮多打一次 400。
+        this.forcedReasoning = new Set();
         this.apiKey = apiKey;
         this.model = model;
         this.visionModel = visionModel;
@@ -96,18 +99,22 @@ export class LlmClient {
             temperature: this.temperature,
         };
         const requestThinking = ['auto', 'enabled', 'disabled'].includes(thinking) ? thinking : this.thinking;
+        // 模型自己关不掉思考时，不发关闭参数（发出去必被 400 顶回来）。
+        const reasoningForced = this.forcedReasoning.has(body.model);
         if (this.provider === 'deepseek') {
             if (requestThinking !== 'auto') body.thinking = { type: requestThinking };
             if (this.effort && requestThinking !== 'disabled') body.reasoning_effort = this.effort;
         } else if (this.provider === 'openrouter') {
-            if (requestThinking === 'disabled') body.reasoning = { enabled: false };
-            else if (this.effort || requestThinking === 'enabled') body.reasoning = {
+            if (requestThinking === 'disabled') {
+                if (!reasoningForced) body.reasoning = { enabled: false };
+            } else if (this.effort || requestThinking === 'enabled') body.reasoning = {
                 ...(requestThinking === 'enabled' ? { enabled: true } : {}),
                 ...(this.effort ? { effort: this.effort } : {}),
             };
         } else {
-            if (requestThinking === 'disabled') body.reasoning_effort = 'none';
-            else if (this.effort) body.reasoning_effort = this.effort;
+            if (requestThinking === 'disabled') {
+                if (!reasoningForced) body.reasoning_effort = 'none';
+            } else if (this.effort) body.reasoning_effort = this.effort;
         }
         for (const parameter of this.unsupportedParameters.get(body.model) ?? []) {
             // Disabling is an explicit user request. Never silently fall back to a model's
@@ -146,7 +153,22 @@ export class LlmClient {
                 // Only a parameter-schema rejection may be retried. Unsupported effort VALUES,
                 // auth, balance and server errors must not silently change the requested behavior.
                 const disablingRejected = requestThinking === 'disabled' && rejected !== 'temperature';
-                if ([400, 422].includes(response.status) && unknownParameter && rejected && !disablingRejected) {
+                // 服务端强制开启思考：这不是「参数名不认识」，是「不许关」。降级为不关闭，
+                // 并记住该模型，后续轮次不再发送关闭参数。
+                const mandatoryReasoning = /reasoning[\s\S]{0,40}(?:is\s+mandatory|mandatory)|reasoning[\s\S]{0,60}cannot be disabled/i.test(text);
+                if ([400, 422].includes(response.status) && mandatoryReasoning && requestThinking === 'disabled'
+                    && (Object.hasOwn(body, 'reasoning') || body.reasoning_effort === 'none')) {
+                    delete body.reasoning;
+                    if (body.reasoning_effort === 'none') delete body.reasoning_effort;
+                    this.forcedReasoning.add(body.model);
+                    this.logger?.warn(`模型 ${body.model} 强制开启思考，关不掉；本轮按服务默认重试（/effort off 对该模型无效）`);
+                    response = await send();
+                    if (!response.ok) {
+                        const text2 = await response.text().catch(() => '');
+                        throw new LlmError(`LLM HTTP ${response.status}`, { status: response.status, body: text2.slice(0, 800) });
+                    }
+                }
+                if (!response.ok && [400, 422].includes(response.status) && unknownParameter && rejected && !disablingRejected) {
                     delete body[rejected];
                     this.logger?.warn(`模型 ${body.model} 不接受参数 ${rejected}，本轮去掉此参数重试`);
                     response = await send();
@@ -156,7 +178,7 @@ export class LlmClient {
                     }
                     if (!this.unsupportedParameters.has(body.model)) this.unsupportedParameters.set(body.model, new Set());
                     this.unsupportedParameters.get(body.model).add(rejected);
-                } else {
+                } else if (!response.ok) {
                     throw new LlmError(`LLM HTTP ${response.status}`, { status: response.status, body: snippet });
                 }
             }
@@ -177,6 +199,7 @@ export class LlmClient {
         if (!response.body) throw new LlmError('LLM 响应没有流式正文');
         let text = '', finishReason = '', usage = null, buffer = '', doneEvent = false;
         let eventLines = [], eventBytes = 0, reasoningContent = '';
+        const responseMetadata = {};
         const reasoningAcc = new Map();
         const toolAcc = new Map();
         const reader = response.body.getReader();
@@ -197,6 +220,9 @@ export class LlmClient {
                 throw new LlmError('LLM 流包含无法解析的数据，回复未完成');
             }
             if (json.error) throw new LlmError('LLM 返回流内错误，回复未完成');
+            for (const key of ['id', 'model', 'provider']) {
+                if (typeof json[key] === 'string') responseMetadata[key] = json[key].slice(0, 200);
+            }
             if (json.usage) usage = json.usage;
             const choice = json.choices?.[0];
             if (!choice) return;
@@ -262,7 +288,7 @@ export class LlmClient {
         };
         // 撞到长度上限但已经有正文：把写好的部分交出去，别让整轮作废
         if (finishReason === 'length' && String(text).trim() !== '' && toolCalls.length === 0) {
-            return { text, toolCalls: [], finishReason, usage, truncated: true, ...reasoning };
+            return { text, toolCalls: [], finishReason, usage, responseMetadata, truncated: true, ...reasoning };
         }
         if (!['stop', 'tool_calls'].includes(finishReason)) {
             const reason = finishReason === 'length' ? '输出达到长度上限'
@@ -277,7 +303,7 @@ export class LlmClient {
             throw new LlmError('LLM 工具调用不完整');
         }
         if (finishReason === 'stop' && !text.trim()) throw new LlmError('LLM 未返回正文');
-        return { text, toolCalls, finishReason, usage, ...reasoning };
+        return { text, toolCalls, finishReason, usage, responseMetadata, ...reasoning };
     }
 }
 

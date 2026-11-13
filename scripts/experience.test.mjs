@@ -87,7 +87,7 @@ test('voice names and clone names work without slash commands and enable voice',
     deps.tts.listVoices = () => [...voices, { id: 'custom-english', name: 'My Voice' }];
     assert.match(await run('音色换成 My Voice'), /My Voice/);
     assert.equal(deps.state.get('voiceName:c2c:alice'), 'My Voice');
-    assert.match(await run('/voice unknown'), /当前设置未变/);
+    assert.match(await run('/voice unknown'), /这把嗓子/);
     assert.equal(deps.state.get('voiceName:c2c:alice'), 'My Voice');
 });
 
@@ -152,3 +152,4 @@ test('a natural setting short-circuits the real message pipeline using one text 
     assert.match(sent[0], /文字/);
     assert.equal(deps.state.get('voice:c2c:alice'), false);
 });
+

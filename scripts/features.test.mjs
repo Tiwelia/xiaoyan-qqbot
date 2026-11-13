@@ -226,7 +226,7 @@ test('a command short-circuits the pipeline and never calls the model', async (t
     const msg = { kind: 'c2c', senderId: 'u1', messageId: 'm1', content: '/status', replyTarget: { scope: 'c2c', targetId: 'u1', msgId: 'm1' } };
     await handleMessage(deps, { state: {} }, msg);
     assert.equal(calls, 0, '指令不进模型');
-    assert.ok(delivered[0].includes('运行：'));
+    assert.ok(delivered[0].includes('妈妈醒着'));
 });
 
 // ── 语音：闸门 + 清理 ───────────────────────────────────────────────────────
@@ -829,7 +829,7 @@ test('/voice with no args toggles, and a bare name switches timbre', async (t) =
     assert.equal(d.state.get(`voice:${key}`), true, '换音色也会把语音打开');
 
     assert.ok((await commands.handle({ ...envBase, text: '/voice status' })).includes('开'));
-    assert.ok((await commands.handle({ ...envBase, text: '/voice list' })).includes('可用音色'));
+    assert.ok((await commands.handle({ ...envBase, text: '/voice list' })).includes('嗓子'));
 });
 
 test('planSpeech splits long replies and skips code', () => {
@@ -1775,7 +1775,7 @@ test('voice guidance rides after the guard layer, not above it', async () => {
 test('persona carries a dirty-talk bank instead of coy teasing', async () => {
     const { buildSystemPrompt } = await import('../src/persona.js');
     const prompt = buildSystemPrompt({ scope: 'c2c' });
-    for (const word of ['肉便器', '欠操', '贱货', '鸡巴', '后穴', '骂就骂到性上', '管教、讲规矩的时候也要带脏']) {
+    for (const word of ['肉便器', '欠操', '贱货', '鸡巴', '后穴', '骂就骂到性上', '任何场景都要带脏']) {
         assert.ok(prompt.includes(word), word);
     }
     assert.match(prompt, /不许把骂写成夸/);
@@ -1817,7 +1817,7 @@ test('thinking can be switched off with /effort off and restored', async () => {
     const run = (text) => h.handle({ scope: 'c2c', targetId: 'u', msg: { senderId: 'u' }, text });
     assert.match(await run('/effort off'), /换成 off/);
     assert.equal(llm.thinking, 'disabled');
-    assert.match((await run('/status')).split('\n')[0], /思考：off/);
+    assert.match((await run('/status')).split('\n')[0], /想得多深：off/);
     await run('/effort high');
     assert.equal(llm.thinking, 'auto');
     assert.equal(llm.effort, 'high');
@@ -1875,3 +1875,6 @@ test('a model that rejects effort/thinking gets one retry without them', async (
     assert.ok(!seen[1].reasoning_effort, '第二次只去掉被拒参数');
     assert.equal(client.getEffort(), 'max', '模型降级不能修改全局设置');
 });
+
+
+

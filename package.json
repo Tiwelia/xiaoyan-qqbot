@@ -15,8 +15,10 @@
     "check:altare": "node altare.js --check",
     "pack:altare": "powershell -NoProfile -File scripts/pack-altare.ps1",
     "selftest": "node --disable-warning=ExperimentalWarning scripts/selftest.mjs",
-    "test": "node --disable-warning=ExperimentalWarning --test scripts/reliability.test.mjs scripts/features.test.mjs scripts/safety.test.mjs scripts/companion.test.mjs scripts/probe-model.test.mjs scripts/bugs.test.mjs scripts/experience.test.mjs scripts/vision-route.test.mjs",
-    "check:config": "node --env-file-if-exists=.env scripts/validate-config.mjs"
+    "test": "node --disable-warning=ExperimentalWarning --test scripts/reliability.test.mjs scripts/features.test.mjs scripts/safety.test.mjs scripts/companion.test.mjs scripts/probe-model.test.mjs scripts/bugs.test.mjs scripts/experience.test.mjs scripts/vision-route.test.mjs scripts/reset.test.mjs scripts/eval.test.mjs scripts/local-eval.test.mjs scripts/model-router.test.mjs scripts/reply-text.test.mjs",
+    "check:config": "node --env-file-if-exists=.env scripts/validate-config.mjs",
+    "eval": "node --disable-warning=ExperimentalWarning scripts/eval.mjs",
+    "eval:local": "node --disable-warning=ExperimentalWarning scripts/eval-local.mjs"
   },
   "dependencies": {
     "@tencent-connect/qqbot-nodejs": "^1.0.4"

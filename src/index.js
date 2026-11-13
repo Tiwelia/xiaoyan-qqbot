@@ -13,10 +13,11 @@ import { createLogger } from './logger.js';
 import { MemoryStore } from './memory.js';
 import { SessionStore } from './session.js';
 import { createStateStore } from './state.js';
+import { createEvalLog } from './eval-log.js';
 import { createSceneGenerator } from './scene.js';
 import { createTts } from './tts.js';
 import { createCommandHandler, humanDuration } from './commands.js';
-import { LlmClient } from './llm.js';
+import { TextModelRouter } from './model-router.js';
 import { createToolkit, listAssets } from './tools.js';
 import { createBot } from './bot.js';
 import { createOwnerGuard } from './owner.js';
@@ -62,21 +63,11 @@ async function main() {
 
     const state = createStateStore({ file: config.state.file, logger });
     const auth = createOwnerGuard({ config, logger });
+    const evalLog = createEvalLog({ dir: config.eval.dir, enabled: config.eval.log, logger });
+    if (evalLog.enabled) logger.info(`评分日志已开启：${config.eval.dir}（每轮对话落一份，供 scripts/eval.mjs 打分）`);
 
-    const llm = new LlmClient({
-        baseUrl: config.llm.baseUrl,
-        apiKey: config.llm.apiKey,
-        model: config.llm.model,
-        provider: config.llm.provider,
-        visionModel: config.llm.visionModel,
-        vision: config.llm.vision,
-        thinking: config.llm.thinking,
-        effort: config.llm.effort,
-        maxTokens: config.llm.maxTokens,
-        temperature: config.llm.temperature,
-        timeoutMs: config.llm.timeoutMs,
-        logger,
-    });
+    const llm = new TextModelRouter({ config: config.llm, state, logger });
+    logger.info(`当前文字模型：${llm.provider} / ${llm.model}；思考：${llm.effortLabel()}`);
 
     const tts = createTts({ config, logger });
     const scene = createSceneGenerator({ config, logger });
@@ -133,22 +124,7 @@ async function main() {
         ttsEngine: config.tts.engine,
     });
 
-    // 上次 /effort 选的档位要接着生效，不然重启就悄悄回到配置默认
-    {
-        const level = state.get('effortLevel', '') || (config.llm.thinking === 'disabled' ? 'off' : '');
-        if (level === 'auto') {
-            llm.setThinking('auto');
-            llm.setEffort('');
-        } else if (level === 'off') {
-            llm.setThinking('disabled');
-            llm.setEffort('');
-        } else if (['minimal', 'low', 'medium', 'high', 'xhigh', 'max'].includes(level)) {
-            llm.setThinking(config.llm.thinking === 'disabled' ? 'auto' : config.llm.thinking);
-            llm.setEffort(level);
-        }
-    }
-
-    const bot = createBot({ config, logger, llm, memory, sessions, toolkit, tts, state, commands, runtime, auth });
+    const bot = createBot({ config, logger, llm, memory, sessions, toolkit, tts, state, commands, runtime, auth, evalLog });
     runtime.bot = bot;
     runtime.companion = createCompanion({ config, state, auth, bot, llm, memory, sessions, runtime, logger });
 
@@ -211,6 +187,7 @@ main().catch((error) => {
     console.error('[FATAL] 启动失败：', error?.stack || error);
     process.exit(1);
 });
+
 
 
 

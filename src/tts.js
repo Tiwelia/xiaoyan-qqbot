@@ -195,8 +195,9 @@ async function readLimited(res, maxBytes, signal) {
 /** 念出来之前先把不该念的东西剔掉：代码块、链接、markdown 记号。 */
 /** 显示用的清洗：只去掉 Qwen 标签（[giggles] 这种），正文一个字都不动。 */
 export function stripTagsForText(text) {
+    // 模型偶尔会造标签（[breathtaking] 这种），文字里一律去掉；中文方括号和数字不算
     return String(text ?? '')
-        .replace(/\[([a-zA-Z][a-zA-Z\s]{2,20})\]/g, (m, name) => (QWEN_TAGS.has(name.trim().toLowerCase()) ? '' : m))
+        .replace(/\[[a-zA-Z][a-zA-Z\s_-]{2,24}\]/g, '')
         .replace(/[ \t]{2,}/g, ' ')
         .replace(/\n{3,}/g, '\n\n')
         .trim();

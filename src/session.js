@@ -5,7 +5,7 @@
  *   data/sessions/group-<group_openid>.json
  *
  * 结构：
- *   { version, scope, targetId, createdAt, updatedAt, messages: [{role, content, ts}] }
+ *   { version, scope, targetId, createdAt, updatedAt, resetAt?, messages: [{role, content, ts}] }
  *
  * 写入是防抖的（默认 300ms 合并一次），并在进程退出时强制 flush。
  */
@@ -66,6 +66,7 @@ export class SessionStore {
                         targetId,
                         createdAt: parsed.createdAt ?? Date.now(),
                         updatedAt: parsed.updatedAt ?? Date.now(),
+                        resetAt: Number.isSafeInteger(parsed.resetAt) && parsed.resetAt > 0 ? parsed.resetAt : 0,
                         messages: parsed.messages.filter(
                             (m) => m && typeof m.role === 'string' && typeof m.content === 'string',
                         ),
@@ -138,9 +139,17 @@ export class SessionStore {
         const data = this.load(scope, targetId);
         data.messages = [];
         data.updatedAt = Date.now();
+        data.resetAt = data.updatedAt;
         this.markDirty(scope, targetId);
-        this.flushOne(scope, targetId);
+        if (!this.flushOne(scope, targetId)) {
+            throw new Error('会话已在内存中清空，但尚未保存；重启可能恢复旧记录，请检查存储后重试 /reset。');
+        }
         return data;
+    }
+
+    /** Persistent boundary for transient context kept outside the message history. */
+    getResetAt(scope, targetId) {
+        return this.load(scope, targetId).resetAt || 0;
     }
 
     /** 还没有任何历史 —— 记忆快照只在这种时候全量注入。 */
@@ -176,15 +185,17 @@ export class SessionStore {
     flushOne(scope, targetId) {
         const key = this.key(scope, targetId);
         const entry = this.cache.get(key);
-        if (!entry || !entry.dirty) return;
+        if (!entry || !entry.dirty) return true;
         try {
             const file = this.filePath(scope, targetId);
             const tmp = `${file}.tmp-${process.pid}`;
             fs.writeFileSync(tmp, JSON.stringify(entry.data, null, 2), 'utf8');
             fs.renameSync(tmp, file);
             entry.dirty = false;
+            return true;
         } catch (error) {
             this.logger?.warn(`会话写盘失败：${error.message}`);
+            return false;
         }
     }
 

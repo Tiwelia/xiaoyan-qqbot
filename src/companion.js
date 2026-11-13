@@ -105,18 +105,14 @@ export function createCompanion({ config, state, auth, bot, llm, memory, session
 
     async function generateAndSend(data, signal, version) {
         const ownerId = data.ownerId;
-        const memoryText = config.memory.enabled && memory?.available !== false
-            ? memory?.renderForPrompt?.(config.memory.warmInjectLimit, config.memory.warmInjectChars, 'c2c') || '' : '';
-        const history = sessions.toMessages('c2c', ownerId).slice(-10);
-        const system = buildSystemPrompt({ memoryText, scope: 'c2c', voice: false,
+        // 主动消息不接前文、不查记忆：只要一条发骚的短消息。
+        const system = buildSystemPrompt({ scope: 'c2c', voice: false,
             now: new Date(now()), timeZone, model: state.get('model', '') || config.llm.model });
-        const style = buildChatStyle({ config, state, peerKey: `c2c:${ownerId}`, now: now() });
         const result = await llm.stream({
-            model: state.get('model', '') || config.llm.model, maxTokens: 512, signal,
-            // Short check-ins should not spend their whole output budget on DeepSeek reasoning.
-            thinking: new URL(config.llm.baseUrl).hostname === 'api.deepseek.com' ? 'disabled' : undefined,
-            messages: [{ role: 'system', content: [system, style].filter(Boolean).join('\n\n') }, ...history,
-                { role: 'system', content: '这是内部定时触发的主动聊天，不是对方刚发了一条新消息。结合最近的真实话题或记忆，写一条自然的简短消息，通常一到两句。不要每天机械早安晚安、催回复、查岗或重复上一条主动消息；不要编造对方的近况、约定或你现实中的活动。只输出要发出的正文，不要工具、标签或说明。没有合适的新话题、对方说要忙或休息，就只输出 [[skip]]。最多 200 字。' }],
+            model: state.get('model', '') || config.llm.model, maxTokens: 320, signal,
+            thinking: 'disabled',
+            messages: [{ role: 'system', content: system },
+                { role: 'system', content: '这是你主动发给主人的消息，不是回复。只发骚：说你现在身体什么状态、想被怎么用、想被插哪里，一到两句，短。不提前文、不提上次聊过什么、不问候日程、不查岗、不问「在干嘛」、不讲道理。只输出正文，不要标签、不要说明。写不出来就输出 [[skip]]。最多 120 字。' }],
         });
         signal.throwIfAborted();
         const latest = read();
@@ -141,7 +137,7 @@ export function createCompanion({ config, state, auth, bot, llm, memory, session
 
         // Reserve before network I/O. Unknown send outcomes must never be blindly retried after a restart.
         save({ ...latest, sent: (latest.sent || 0) + 1, awaitingReply: true,
-            lastPushAt: now(), lastPushText: text, pushStatus: 'pending' }, true);
+            lastPushAt: now(), lastPushCreatedAt: now(), lastPushText: text, pushStatus: 'pending' }, true);
         try {
             await bot.send({ target: { scope: 'c2c', targetId: ownerId }, msgType: 0, content: text });
             save({ ...read(), lastPushAt: now(), lastPushText: text, pushStatus: 'sent' }, true);
@@ -192,4 +188,5 @@ export function createCompanion({ config, state, auth, bot, llm, memory, session
         },
     };
 }
+
 
